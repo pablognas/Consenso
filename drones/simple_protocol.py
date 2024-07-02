@@ -9,8 +9,18 @@ from gradysim.protocol.messages.telemetry import Telemetry
 from gradysim.protocol.plugin.mission_mobility import MissionMobilityPlugin, MissionMobilityConfiguration
 from gradysim.protocol.position import squared_distance
 
+global checked
+global unchecked
+
+checked = 0
+unchecked = 0
+
 def getRange():
     return 50
+
+
+
+
 
 class SimpleSender(enum.Enum):
     SENSOR = 0
@@ -106,7 +116,7 @@ class SimpleSensorProtocol(IProtocol):
                 self._log.info(f"Sent data to UAV {received_message['sender']}")
                 #self.provider.cancel_timer("")
                 self.packet = False
-        elif received_message['category'] == MessageType.BEACON.value and not self.tracked:
+        elif received_message['category'] == MessageType.BEACON.value and received_message['sender_type'] == SimpleSender.UAV.value and not self.tracked:
             self._log.info(report_Bmessage(received_message))
             #self.provider.cancel_timer("")
             self._send_beacon()
@@ -120,7 +130,13 @@ class SimpleSensorProtocol(IProtocol):
         self.position = telemetry.current_position
 
     def finish(self) -> None:
-        self._log.info(f"Final state: {self.packet}")
+        global checked
+        global unchecked
+        if self.packet:
+            unchecked += 1
+        else:
+            checked += 1
+        self._log.info(f"{checked} sensor(s) data acquired and {unchecked} sensor(s) data not acquired")
     
 class SimpleUAVProtocol(IProtocol):
     _log: logging.Logger
@@ -233,10 +249,14 @@ class SimpleUAVProtocol(IProtocol):
                 self._log.info(report_Bmessage(received_message))
                 if received_message['sender_type'] == SimpleSender.SENSOR.value:
                     #waypoints = self._mission._current_mission
-                    self.next_waypoints = [received_message['position']]+self._mission._current_mission[self._mission._current_waypoint:]
-                    self._mission.stop_mission()
-                    self._mission.start_mission(self.next_waypoints)
-                    self._send_copy()
+                    try:
+                        self.next_waypoints = [received_message['position']]+self._mission._current_mission[self._mission._current_waypoint:]
+                        self._mission.stop_mission()
+                        self._mission.start_mission(self.next_waypoints)
+                        self._send_copy()
+                    except TypeError:
+                        pass
+                    
                     
         elif received_message['category'] == MessageType.DATA.value:
             self._log.info(report_Dmessage(received_message))
@@ -251,7 +271,12 @@ class SimpleUAVProtocol(IProtocol):
                 self.assigned = True
                 #self.provider.schedule_timer("", self.provider.current_time() + 1)
         elif received_message['category'] == MessageType.DATAREQ.value:
-            self._send_data()
+            if received_message['sender_type'] == SimpleSender.SENSOR.value:
+                self._send_data()
+            elif received_message['sender_type'] == SimpleSender.GROUND_STATION.value:
+                missing_waypoints = len(self._mission._current_mission)
+                if missing_waypoints == 1 or self._mission.current_waypoint == missing_waypoints-1:
+                    self._send_data()
         elif received_message['category'] == MessageType.COPY.value:
             if received_message['sender_type'] == SimpleSender.GROUND_STATION.value:
                 self.retired = True
@@ -325,8 +350,9 @@ class SimpleGroundStationProtocol(IProtocol):
     def handle_packet(self, message: Message) -> None:
         received_message: Message = json.loads(message)
         if received_message['category'] == MessageType.BEACON.value:
-            if received_message['sender'] in self.assigned and not self.sensor_count[self.find(received_message['sender'])] and received_message['away']:
-                self._request_data()
+            if received_message['sender'] in self.assigned:
+                if not self.sensor_count[self.find(received_message['sender'])] and received_message['away']:
+                    self._request_data()
             else:
                 self._send_assignment()
                 self.assigned.append(received_message['sender'])
@@ -342,4 +368,8 @@ class SimpleGroundStationProtocol(IProtocol):
         pass
 
     def finish(self) -> None:
-        self._log.info(f"Final sensor count: {self.sensor_count}")
+        count = 0
+        for el in self.sensor_count:
+            if el:
+                count+=el
+        self._log.info(f"Final sensor count: {count}")

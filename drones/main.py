@@ -4,17 +4,23 @@ from gradysim.simulator.handler.timer import TimerHandler
 from gradysim.simulator.handler.visualization import VisualizationHandler, VisualizationConfiguration
 from gradysim.simulator.simulation import SimulationBuilder, SimulationConfiguration
 from simple_protocol import SimpleSensorProtocol, SimpleGroundStationProtocol, SimpleUAVProtocol, getRange
+from random import randint
 
 
 def main():
     # Configuring simulation
+    limiteMin = 0
+    limiteMax = 500
+    sensors = 10
+
     config = SimulationConfiguration(
         duration=400
     )
     builder = SimulationBuilder(config)
 
     # Instantiating 1 sensors in fixed positions
-    builder.add_node(SimpleSensorProtocol, (150, 0, 0))
+    for i in range(sensors):
+        builder.add_node(SimpleSensorProtocol, (randint(limiteMin,limiteMax), randint(limiteMin,limiteMax), 0))
     #builder.add_node(SimpleSensorProtocol, (0, 150, 0))
     #builder.add_node(SimpleSensorProtocol, (-150, 0, 0))
     #builder.add_node(SimpleSensorProtocol, (0, -150, 0))
@@ -37,9 +43,9 @@ def main():
     )))
     builder.add_handler(MobilityHandler())
     builder.add_handler(VisualizationHandler(VisualizationConfiguration(
-        x_range=(0, 500),
-        y_range=(0, 500),
-        z_range=(0, 500)
+        x_range=(limiteMin, limiteMax),
+        y_range=(limiteMin, limiteMax),
+        z_range=(limiteMin, limiteMax/10)
     )))
 
     # Building & starting
