@@ -35,6 +35,10 @@ def report_Dmessage(message: Message) -> str:
     return (f"Received data from "
             f"{SimpleSender(message['sender_type']).name} {message['sender']}")
 
+def report_ack(message: Message) -> str:
+    return (f"Received ACK from "
+            f"{SimpleSender(message['sender_type']).name} {message['sender']}")
+
 def report_DataReport(message: Message) -> str:
     return (f"Received {message['sensor_count']} sensor(s) data from "
             f"{SimpleSender(message['sender_type']).name} {message['sender']}")
@@ -49,13 +53,14 @@ def report_Amessage(message: Message) -> str:
 
 class SimpleSensorProtocol(IProtocol):
     _log: logging.Logger
-    packet: bool
+    #packet: bool
+    tracked: bool
     position: tuple
 
     def initialize(self) -> None:
         self._log = logging.getLogger()
         self.packet = False
-
+        self.tracked = False
         self._generate_packet()
 
     def _generate_packet(self) -> None:
@@ -79,7 +84,7 @@ class SimpleSensorProtocol(IProtocol):
         self.provider.schedule_timer("", self.provider.current_time() + 1)
 
     def handle_timer(self, timer: str) -> None:
-        if self.packet:
+        if not self.tracked:
             self._send_beacon()
     
     def handle_packet(self, message: Message) -> None:
@@ -87,7 +92,7 @@ class SimpleSensorProtocol(IProtocol):
         if received_message['category'] == MessageType.DATA.value:
             self._log.info(report_Dmessage(received_message))
 
-            if received_message['sender_type'] == SimpleSender.UAV.value and self.packet:
+            if received_message['sender_type'] == SimpleSender.UAV.value and self.tracked:
                 response: Message = {
                     'category': MessageType.DATA.value,
                     'sender_type': SimpleSender.SENSOR.value,
@@ -96,16 +101,16 @@ class SimpleSensorProtocol(IProtocol):
 
                 command = SendMessageCommand(json.dumps(response), received_message['sender'])
                 self.provider.send_communication_command(command)
-                self.packet = False
                 self._log.info(f"Sent data to UAV {received_message['sender']}")
-
-                self.packet = False
                 self.provider.cancel_timer("")
-        elif received_message['category'] == MessageType.BEACON.value and self.packet:
-            #simple_message: Message = json.loads(message)
+        elif received_message['category'] == MessageType.BEACON.value and not self.tracked:
             self._log.info(report_Bmessage(received_message))
             self.provider.cancel_timer("")
             self._send_beacon()
+        elif received_message['category'] == MessageType.ACKNOLEDGMENT.value:
+            self._log.info(report_ack(received_message))
+            self.provider.cancel_timer("")
+            self.tracked = True
 
 
     def handle_telemetry(self, telemetry: Telemetry) -> None:
@@ -161,6 +166,17 @@ class SimpleUAVProtocol(IProtocol):
         command = BroadcastMessageCommand(json.dumps(message))
         self.provider.send_communication_command(command)
 
+    def _send_ack(self) -> None:
+        self._log.info(f"Sending ACK")
+
+        message: Message = {
+            'category': MessageType.ACKNOLEDGMENT.value,
+            'sender_type': SimpleSender.UAV.value,
+            'sender': self.provider.get_id(),
+        }
+        command = BroadcastMessageCommand(json.dumps(message))
+        self.provider.send_communication_command(command)
+
     def _request_data(self) -> None:
         self._log.info(f"Requesting data")
 
@@ -186,7 +202,6 @@ class SimpleUAVProtocol(IProtocol):
                 self._request_data()
         except TypeError:
             pass
-
     
     def handle_packet(self, message: Message) -> None:
         received_message: Message = json.loads(message)
@@ -198,8 +213,7 @@ class SimpleUAVProtocol(IProtocol):
                     new_waypoints = [received_message['position']]+self._mission._current_mission[self._mission._current_waypoint:]
                     self._mission.stop_mission()
                     self._mission.start_mission(new_waypoints)
-                
-
+                    self._send_ack()
                     
         elif received_message['category'] == MessageType.DATA.value:
             self._log.info(report_Dmessage(received_message))
