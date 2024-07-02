@@ -29,6 +29,8 @@ class MessageType(enum.Enum):
     ASSIGNMENT = 2
     COPY = 3
     DATAREQ = 4
+    HALT = 5
+    PARLAY = 6
 
 class Message ():
     category: int
@@ -88,11 +90,11 @@ class SimpleSensorProtocol(IProtocol):
         self._log.info(f"Generated packet, communication ready")
         #self.provider.schedule_timer("", self.provider.current_time() + 1)
     
-    def _send_beacon(self) -> None:
+    def _send_beacon(self,  destination : int = None) -> None:
         self._log.info(f"Sending beacon at {self.position}")
 
         message = new_message(MessageType.BEACON.value,SimpleSender.SENSOR.value,self.provider.get_id(),(self.position[0],self.position[1],20))
-        command = BroadcastMessageCommand(json.dumps(message))
+        command = SendMessageCommand(json.dumps(message), destination)
         self.provider.send_communication_command(command)
 
         self.provider.schedule_timer("", self.provider.current_time() + 1)
@@ -111,16 +113,14 @@ class SimpleSensorProtocol(IProtocol):
                 command = SendMessageCommand(json.dumps(response), received_message['sender'])
                 self.provider.send_communication_command(command)
                 self._log.info(f"Sent data to UAV {received_message['sender']}")
-                #self.provider.cancel_timer("")
                 self.packet = False
         elif received_message['category'] == MessageType.BEACON.value and received_message['sender_type'] == SimpleSender.UAV.value and not self.tracked:
             self._log.info(report_Bmessage(received_message))
-            #self.provider.cancel_timer("")
-            self._send_beacon()
+            self._send_beacon(received_message['sender'])
+            self.tracked = True
         elif received_message['category'] == MessageType.COPY.value:
             self._log.info(report_copy(received_message))
-            #self.provider.cancel_timer("")
-            self.tracked = True
+            
 
     def handle_telemetry(self, telemetry: Telemetry) -> None:
         self.position = telemetry.current_position
@@ -145,6 +145,9 @@ class SimpleUAVProtocol(IProtocol):
     gotData: bool
     next_waypoints: list
 
+    parent: int
+    deltaId: int
+
     _mission: MissionMobilityPlugin
 
     def initialize(self) -> None:
@@ -156,6 +159,11 @@ class SimpleUAVProtocol(IProtocol):
         self.away = False
         self.gotData = False
         self.next_waypoints = []
+        self.parent = None
+        self.left = None
+        self.right = None
+        self.deltaId = None
+        self.deltaSize = None
 
         self._mission = MissionMobilityPlugin(self, MissionMobilityConfiguration(
              tolerance= 0.5
@@ -171,14 +179,16 @@ class SimpleUAVProtocol(IProtocol):
             position = self.position,
             sender_type = SimpleSender.UAV.value,
             sender = self.provider.get_id(),
-            away = self.away
+            away = self.away,
+            count = self.deltaSize,
+            waypoints =self._mission._current_mission 
         )  
         command = BroadcastMessageCommand(json.dumps(message))
         self.provider.send_communication_command(command)
 
         self.provider.schedule_timer("", self.provider.current_time() + 1)
 
-    def _send_data(self) -> None:
+    def _send_data(self,  destination : int = None) -> None:
         self._log.info(f"Sending data")
 
         message = new_message(
@@ -187,10 +197,10 @@ class SimpleUAVProtocol(IProtocol):
             sender = self.provider.get_id(),
             count = self.sensor_count
         )
-        command = BroadcastMessageCommand(json.dumps(message))
+        command = SendMessageCommand(json.dumps(message), destination)
         self.provider.send_communication_command(command)
 
-    def _send_copy(self) -> None:
+    def _send_copy(self,  destination : int = None) -> None:
         self._log.info(f"Sending COPY")
 
         message = new_message(
@@ -198,7 +208,42 @@ class SimpleUAVProtocol(IProtocol):
             sender_type = SimpleSender.UAV.value,
             sender = self.provider.get_id(),
         )
-        command = BroadcastMessageCommand(json.dumps(message))
+        command = SendMessageCommand(json.dumps(message), destination)
+        self.provider.send_communication_command(command)
+
+    def _send_halt(self,  destination : int = None) -> None:
+        self._log.info(f"Sending Halt")
+
+        message = new_message(
+            category = MessageType.HALT.value,
+            sender_type = SimpleSender.UAV.value,
+            sender = self.provider.get_id(),
+        )
+        command = SendMessageCommand(json.dumps(message), destination)
+        self.provider.send_communication_command(command)
+
+    def _send_parlay(self, destination : int = None) -> None:
+        self._log.info(f"Sending Parlay")
+
+        message = new_message(
+            category = MessageType.PARLAY.value,
+            sender_type = SimpleSender.UAV.value,
+            sender = self.provider.get_id(),
+            position = self.position
+        )
+        command = SendMessageCommand(json.dumps(message),destination)
+        self.provider.send_communication_command(command)
+
+    def _send_assignment(self, destination: int = None) -> None:
+        self._log.info(f"Sending assignment to {self.points}")
+
+        message = new_message(
+            category = MessageType.ASSIGNMENT.value,
+            waypoints = self._mission._current_mission,
+            sender_type = SimpleSender.UAV.value,
+            sender = self.provider.get_id()
+        )
+        command = SendMessageCommand(json.dumps(message),destination)
         self.provider.send_communication_command(command)
 
     def _request_data(self) -> None:
@@ -238,38 +283,52 @@ class SimpleUAVProtocol(IProtocol):
     def handle_packet(self, message: Message) -> None:
         received_message: Message = json.loads(message)
         if received_message['category'] == MessageType.BEACON.value:
-                #received_message: Message = json.loads(message)
                 self._log.info(report_Bmessage(received_message))
                 if received_message['sender_type'] == SimpleSender.SENSOR.value:
-                    #waypoints = self._mission._current_mission
                     try:
                         self.next_waypoints = [received_message['position']]+self._mission._current_mission[self._mission._current_waypoint:]
                         self._mission.stop_mission()
                         self._mission.start_mission(self.next_waypoints)
-                        self._send_copy()
+                        self._send_copy(received_message['sender'])
                     except TypeError:
                         pass
-                    
-                    
+                if received_message['sender_type'] == SimpleSender.UAV.value:
+                    if self.assigned:
+                        if self._mission._current_mission == received_message['waypoints']:
+                            if received_message['sender'] != self.parent and received_message['sender'] != self.left and received_message['sender'] != self.right:
+                                if self.left:
+                                    self._send_halt(self.left)
+                                if self.right:
+                                    self._send_halt(self.right)
+                                if self.deltaId > 0:
+                                    self._send_halt(self.parent)
+                                    self._send_parlay(received_message['sender'])
+                                    self._mission.stop_mission()
+                                else:
+                                    if self.deltaSize > received_message['count'] or (self.deltaSize == received_message['count'] and self.provider.get_id() < received_message['sender']):
+                                        self._send_assignment(received_message['sender'])
+                                
+
         elif received_message['category'] == MessageType.DATA.value:
             self._log.info(report_Dmessage(received_message))
             if received_message['sender_type'] == SimpleSender.SENSOR.value:
                 self.sensor_count += 1
                 self.gotData = True
         elif received_message['category'] == MessageType.ASSIGNMENT.value:
-            if not self.assigned:
+            if not self.assigned and received_message['sender_type'] == SimpleSender.GROUND_STATION.value:
                 received_message: Message = json.loads(message)
                 self._log.info(report_Amessage(received_message))
                 self._mission.start_mission(received_message['waypoints'])
                 self.assigned = True
-                #self.provider.schedule_timer("", self.provider.current_time() + 1)
+                self.deltaId = 0
+                self.deltaSize = 1
         elif received_message['category'] == MessageType.DATAREQ.value:
             if received_message['sender_type'] == SimpleSender.SENSOR.value:
-                self._send_data()
+                self._send_data(received_message['sender'])
             elif received_message['sender_type'] == SimpleSender.GROUND_STATION.value:
                 missing_waypoints = len(self._mission._current_mission)
                 if missing_waypoints == 1 or self._mission.current_waypoint == missing_waypoints-1:
-                    self._send_data()
+                    self._send_data(received_message['sender'])
         elif received_message['category'] == MessageType.COPY.value:
             if received_message['sender_type'] == SimpleSender.GROUND_STATION.value:
                 self.retired = True
@@ -278,14 +337,11 @@ class SimpleUAVProtocol(IProtocol):
     def finish(self) -> None:
         self._log.info(f"Final sensor count: {self.sensor_count}")
 
-#points = [(100,100,20),(100,900,20),(900,900,20),(900,100,20),(25,25,0)]
-
 class SimpleGroundStationProtocol(IProtocol):
     _log: logging.Logger
     sensor_count: list
     points: tuple
     assigned: list
-
 
     def initialize(self) -> None:
         self._log = logging.getLogger()
@@ -295,7 +351,7 @@ class SimpleGroundStationProtocol(IProtocol):
         self.assigned = []
         #self.provider.schedule_timer("", self.provider.current_time() + 1)
 
-    def _send_assignment(self) -> None:
+    def _send_assignment(self, destination: int = None) -> None:
         self._log.info(f"Sending assignment to {self.points}")
 
         message = new_message(
@@ -304,12 +360,10 @@ class SimpleGroundStationProtocol(IProtocol):
             sender_type = SimpleSender.GROUND_STATION.value,
             sender = self.provider.get_id()
         )
-        command = BroadcastMessageCommand(json.dumps(message))
+        command = SendMessageCommand(json.dumps(message),destination)
         self.provider.send_communication_command(command)
 
-        #self.provider.schedule_timer("", self.provider.current_time() + 1)
-
-    def _send_copy(self) -> None:
+    def _send_copy(self, destination: int = None) -> None:
         self._log.info(f"Sending COPY")
 
         message = new_message(
@@ -317,7 +371,7 @@ class SimpleGroundStationProtocol(IProtocol):
             sender_type = SimpleSender.GROUND_STATION.value,
             sender = self.provider.get_id(),
         )
-        command = BroadcastMessageCommand(json.dumps(message))
+        command = SendMessageCommand(json.dumps(message),destination)
         self.provider.send_communication_command(command)
 
     def find(self, searched: int) -> int:
@@ -326,7 +380,7 @@ class SimpleGroundStationProtocol(IProtocol):
                 return i
         return -1
 
-    def _request_data(self) -> None:
+    def _request_data(self,destination: int = None) -> None:
         self._log.info(f"Requesting data")
 
         message = new_message(
@@ -334,7 +388,7 @@ class SimpleGroundStationProtocol(IProtocol):
             sender_type = SimpleSender.GROUND_STATION.value,
             sender = self.provider.get_id(),
         )
-        command = BroadcastMessageCommand(json.dumps(message))
+        command = SendMessageCommand(json.dumps(message),destination)
         self.provider.send_communication_command(command)
 
     def handle_timer(self, timer: str) -> None:
@@ -345,9 +399,9 @@ class SimpleGroundStationProtocol(IProtocol):
         if received_message['category'] == MessageType.BEACON.value:
             if received_message['sender'] in self.assigned:
                 if not self.sensor_count[self.find(received_message['sender'])] and received_message['away']:
-                    self._request_data()
+                    self._request_data(received_message['sender'])
             else:
-                self._send_assignment()
+                self._send_assignment(received_message['sender'])
                 self.assigned.append(received_message['sender'])
                 self.sensor_count.append(False)
 
@@ -355,7 +409,7 @@ class SimpleGroundStationProtocol(IProtocol):
             if received_message['sender_type'] == SimpleSender.UAV.value:
                 self.sensor_count[self.find(received_message['sender'])] = received_message['count']
                 self._log.info(report_DataReport(received_message))
-                self._send_copy()
+                self._send_copy(received_message['sender'])
 
     def handle_telemetry(self, telemetry: Telemetry) -> None:
         pass
